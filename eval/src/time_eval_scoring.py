@@ -11,7 +11,7 @@ import pandas as pd
 
 INITIAL_CASH = 10_000.0
 MAX_CONTRACTS = 100.0
-DERIVED_TRADE_EDGE_THRESHOLD = 0.02
+DERIVED_TRADE_EDGE_THRESHOLD = 0.05
 HEADLINE_BOOTSTRAP_GROUPS = {"all", "horizon_bucket", "category"}
 MODEL_CUTOFFS: dict[str, pd.Timestamp] = {
     "openai/gpt-5.5": pd.Timestamp("2025-12-01", tz="UTC"),

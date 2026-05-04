@@ -468,11 +468,11 @@ def build_time_eval_index(
             lambda row: _classify_category(str(row["title"]), str(row["event_ticker"]), str(row["market_type"])),
             axis=1,
         )
+        yes_sub = spans["yes_sub_title"].fillna("wins")
+        no_sub = spans["no_sub_title"].fillna("does not win")
+        same = yes_sub == no_sub
         spans["resolution_criteria"] = (
-            "YES: "
-            + spans["yes_sub_title"].fillna("wins")
-            + " | NO: "
-            + spans["no_sub_title"].fillna("does not win")
+            "YES: " + yes_sub + " | NO: " + no_sub.where(~same, "not " + yes_sub)
         )
         spans["liquidity_value"] = spans["total_contracts"].fillna(spans["volume"]).fillna(0)
         spans = _bucket_by_quantiles(spans, "liquidity_value", "liquidity_tier", labels=["low", "mid", "high"])
