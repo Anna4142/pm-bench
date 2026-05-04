@@ -14,9 +14,10 @@ MAX_CONTRACTS = 100.0
 DERIVED_TRADE_EDGE_THRESHOLD = 0.02
 HEADLINE_BOOTSTRAP_GROUPS = {"all", "horizon_bucket", "category"}
 MODEL_CUTOFFS: dict[str, pd.Timestamp] = {
-    # Verified from public model pages/search snippets on 2026-05-04.
     "openai/gpt-5.5": pd.Timestamp("2025-12-01", tz="UTC"),
-    "deepseek/deepseek-v3.2": pd.Timestamp("2025-06-04", tz="UTC"),
+    "deepseek/deepseek-v3.2": pd.Timestamp("2025-12-01", tz="UTC"),
+    "z-ai/glm-5.1": pd.Timestamp("2025-12-01", tz="UTC"),
+    "qwen/qwen3.6-max-preview": pd.Timestamp("2025-12-01", tz="UTC"),
 }
 
 
