@@ -121,6 +121,7 @@ Override defaults via env vars:
 - `TIME_EVAL_RECENT_TRADES` (default: `0`) — include all pre-freeze trades; positive values cap the table
 - `TIME_EVAL_BASELINE_HOURS` (default: `24`) — recent VWAP window for the market-price baseline
 - `TIME_EVAL_MIN_RECENT_BASELINE_TRADES` (default: `3`) — minimum trades required to use the recent VWAP baseline
+- `TIME_EVAL_HISTORY_MODE` (default: `full`) — trajectory ablation switch. `full` = metadata + baseline + price history (default), `baseline_only` = metadata + market price baseline at t0, `none` = metadata only. Override per run via `--history-mode {full,baseline_only,none}` to reproduce the trajectory-conditioning ablation.
 
 ## Outputs
 

@@ -14,7 +14,7 @@ from typing import Any
 import pandas as pd
 from openai import AsyncOpenAI
 
-from eval.src.build_time_eval_index import SYSTEM_PROMPT, build_time_eval_index
+from eval.src.build_time_eval_index import HISTORY_MODES, SYSTEM_PROMPT, build_time_eval_index
 from eval.src.time_eval_scoring import score_outputs
 from eval.src.token_costs import cost_for_usage, count_messages_tokens, fetch_openrouter_pricing, money
 
@@ -48,17 +48,25 @@ def _load_or_build_index(
     per_bucket: int,
     seed: int,
     rebuild: bool,
+    history_mode: str,
 ) -> pd.DataFrame:
     index_path = out_dir / "time_eval_index.parquet"
-    if rebuild or not index_path.exists():
-        return build_time_eval_index(
-            markets_dir=markets_dir,
-            trades_dir=trades_dir,
-            out_dir=out_dir,
-            per_bucket=per_bucket,
-            seed=seed,
+    if not rebuild and index_path.exists():
+        cached = pd.read_parquet(index_path)
+        cached_mode = cached["history_mode"].iloc[0] if "history_mode" in cached.columns and not cached.empty else "full"
+        if cached_mode == history_mode:
+            return cached
+        print(
+            f"Cached index history_mode={cached_mode!r} does not match requested {history_mode!r}; rebuilding."
         )
-    return pd.read_parquet(index_path)
+    return build_time_eval_index(
+        markets_dir=markets_dir,
+        trades_dir=trades_dir,
+        out_dir=out_dir,
+        per_bucket=per_bucket,
+        seed=seed,
+        history_mode=history_mode,
+    )
 
 
 def _sample_tasks(
@@ -204,17 +212,22 @@ async def run_time_eval(
     domains: list[str] | None,
     run_id: str | None,
     model_cutoff: str | None,
+    history_mode: str,
     markets_dir: Path,
     trades_dir: Path,
     out_dir: Path,
 ) -> dict[str, Any]:
+    if history_mode not in HISTORY_MODES:
+        raise SystemExit(f"--history-mode must be one of {HISTORY_MODES}")
     _load_dotenv()
     api_key = os.environ.get("OPENROUTER_API_KEY")
 
     out_dir.mkdir(parents=True, exist_ok=True)
     started_at = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    run_id = _safe_name(run_id or started_at)
-    index = _load_or_build_index(out_dir, markets_dir, trades_dir, per_bucket, seed, rebuild_index)
+    run_id = _safe_name(run_id or f"{started_at}__hist-{history_mode}")
+    index = _load_or_build_index(
+        out_dir, markets_dir, trades_dir, per_bucket, seed, rebuild_index, history_mode
+    )
     tasks = _sample_tasks(index, num_examples, seed, domains=domains)
     estimate = _estimate_cost(tasks, model=model, max_tokens=max_tokens, api_key=api_key)
     estimate_path = out_dir / f"time_token_estimate__{model.replace('/', '__')}.json"
@@ -319,6 +332,7 @@ async def run_time_eval(
         "domains": domains,
         "seed": seed,
         "model_cutoff": model_cutoff,
+        "history_mode": history_mode,
         "n_requested": len(outputs),
         "n_eligible": len(detailed),
         "estimate": estimate,
@@ -367,6 +381,12 @@ def main() -> None:
     parser.add_argument("--domains", nargs="*", default=None, help="Optional categories to cross with long/mid/short.")
     parser.add_argument("--run-id", default=None, help="Optional ID for non-overwritten run artifacts.")
     parser.add_argument("--model-cutoff", default=None, help="Exclude tasks with resolution_date before this date.")
+    parser.add_argument(
+        "--history-mode",
+        choices=HISTORY_MODES,
+        default=os.environ.get("TIME_EVAL_HISTORY_MODE", "full"),
+        help="Trajectory ablation: 'full' shows price history, 'baseline_only' shows just market price, 'none' is metadata only.",
+    )
     parser.add_argument("--per-bucket", type=int, default=int(os.environ.get("TIME_EVAL_PER_BUCKET", "20")))
     parser.add_argument("--seed", type=int, default=int(os.environ.get("EVAL_SEED", "7")))
     parser.add_argument("--markets-dir", type=Path, default=ROOT / "data" / "kalshi" / "markets")
@@ -389,6 +409,7 @@ def main() -> None:
             domains=args.domains,
             run_id=args.run_id,
             model_cutoff=args.model_cutoff,
+            history_mode=args.history_mode,
             markets_dir=args.markets_dir,
             trades_dir=args.trades_dir,
             out_dir=args.out_dir,

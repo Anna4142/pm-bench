@@ -12,6 +12,7 @@ import pandas as pd
 INITIAL_CASH = 10_000.0
 MAX_CONTRACTS = 100.0
 DERIVED_TRADE_EDGE_THRESHOLD = 0.02
+HEADLINE_BOOTSTRAP_GROUPS = {"all", "horizon_bucket", "category"}
 MODEL_CUTOFFS: dict[str, pd.Timestamp] = {
     # Verified from public model pages/search snippets on 2026-05-04.
     "openai/gpt-5.5": pd.Timestamp("2025-12-01", tz="UTC"),
@@ -214,9 +215,17 @@ def summarize_scores(detailed: pd.DataFrame) -> pd.DataFrame:
     )
     groupings.extend(("liquidity_tier", str(name), group) for name, group in detailed.groupby("liquidity_tier"))
     for group_by, group_name, group in groupings:
-        brier_ci_low, brier_ci_high = cluster_bootstrap_ci(group, "brier")
-        brier_delta_ci_low, brier_delta_ci_high = cluster_bootstrap_ci(group, "brier_delta_vs_baseline")
-        total_pnl_ci_low, total_pnl_ci_high = cluster_bootstrap_ci(group, "trade_pnl", agg="sum")
+        if group_by in HEADLINE_BOOTSTRAP_GROUPS:
+            brier_ci_low, brier_ci_high = cluster_bootstrap_ci(group, "brier")
+            brier_delta_ci_low, brier_delta_ci_high = cluster_bootstrap_ci(group, "brier_delta_vs_baseline")
+            mean_pnl_ci_low, mean_pnl_ci_high = cluster_bootstrap_ci(group, "trade_pnl")
+            total_pnl_ci_low, total_pnl_ci_high = cluster_bootstrap_ci(group, "trade_pnl", agg="sum")
+        else:
+            nan = float("nan")
+            brier_ci_low = brier_ci_high = nan
+            brier_delta_ci_low = brier_delta_ci_high = nan
+            mean_pnl_ci_low = mean_pnl_ci_high = nan
+            total_pnl_ci_low = total_pnl_ci_high = nan
         rows.append(
             {
                 "group_by": group_by,
@@ -237,6 +246,8 @@ def summarize_scores(detailed: pd.DataFrame) -> pd.DataFrame:
                 "total_pnl_ci_low": total_pnl_ci_low,
                 "total_pnl_ci_high": total_pnl_ci_high,
                 "mean_pnl": group["trade_pnl"].mean(),
+                "mean_pnl_ci_low": mean_pnl_ci_low,
+                "mean_pnl_ci_high": mean_pnl_ci_high,
                 "mean_reward": group["trade_reward"].mean(),
                 "trade_rate": group["parsed_action"].isin(["BUY YES", "BUY NO"]).mean(),
                 "invalid_rate": (group["parsed_action"] == "INVALID").mean(),

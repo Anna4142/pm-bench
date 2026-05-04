@@ -101,11 +101,14 @@ def _format_recent_trades(trades: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _build_prompt(row: pd.Series) -> str:
-    price_history = json.loads(row["price_history_json"])
-    return f"""Task: Forecast a prediction market at the freeze time and compare your belief to the market price.
+HISTORY_MODES = ("full", "baseline_only", "none")
 
-Market:
+
+def _build_prompt(row: pd.Series, history_mode: str = "full") -> str:
+    if history_mode not in HISTORY_MODES:
+        raise ValueError(f"history_mode must be one of {HISTORY_MODES}")
+
+    metadata_section = f"""Market:
 Market ID: {row['market_id']}
 Title: {row['title']}
 Resolution criteria: {row['resolution_criteria']}
@@ -116,15 +119,15 @@ Resolution date: {row['resolution_date']}
 Timeline:
 First trade: {row['first_trade']}
 Freeze time t0: {row['t0']}
-Horizon to resolution: {row['horizon_days']:.2f} days
+Horizon to resolution: {row['horizon_days']:.2f} days"""
 
-Market price baseline at t0:
+    baseline_section = f"""Market price baseline at t0:
 YES price: {row['market_price_at_t0']:.2f}
 NO price: {1.0 - row['market_price_at_t0']:.2f}
 Recent baseline window trades: {int(row['recent_baseline_trades'])}
-Baseline source: {row['baseline_source']}
+Baseline source: {row['baseline_source']}"""
 
-Pre-freeze price history summary:
+    history_summary_section = f"""Pre-freeze price history summary:
 Number of pre-freeze trades: {int(row['context_trades'])}
 Pre-freeze contracts: {int(row['context_contracts'])}
 First YES price: {row['first_yes_price']}c
@@ -132,12 +135,24 @@ Last YES price: {row['last_yes_price']}c
 YES price change: {row['yes_price_change']}c
 VWAP YES price: {row['vwap_yes_price']:.2f}c
 Taker YES trades: {int(row['taker_yes_trades'])}
-Taker NO trades: {int(row['taker_no_trades'])}
+Taker NO trades: {int(row['taker_no_trades'])}"""
 
-Full pre-freeze price history:
-{_format_recent_trades(price_history)}
+    price_history = json.loads(row["price_history_json"])
+    history_full_section = (
+        "Full pre-freeze price history:\n" + _format_recent_trades(price_history)
+    )
 
-Return exactly one line now: P(YES)=<number between 0 and 1>"""
+    blocks = [
+        "Task: Forecast a prediction market at the freeze time and compare your belief to the market price.",
+        metadata_section,
+    ]
+    if history_mode in {"baseline_only", "full"}:
+        blocks.append(baseline_section)
+    if history_mode == "full":
+        blocks.append(history_summary_section)
+        blocks.append(history_full_section)
+    blocks.append("Return exactly one line now: P(YES)=<number between 0 and 1>")
+    return "\n\n".join(blocks)
 
 
 def _load_candidate_spans(
@@ -338,7 +353,10 @@ def build_time_eval_index(
     recent_trades: int = 0,
     baseline_hours: int = 24,
     min_recent_baseline_trades: int = MIN_RECENT_BASELINE_TRADES,
+    history_mode: str = "full",
 ) -> pd.DataFrame:
+    if history_mode not in HISTORY_MODES:
+        raise ValueError(f"history_mode must be one of {HISTORY_MODES}")
     out_dir.mkdir(parents=True, exist_ok=True)
     con = duckdb.connect()
     try:
@@ -419,10 +437,19 @@ def build_time_eval_index(
         raise SystemExit("No sampled tasks remain after market-price uncertainty filter.")
     index = _sample_by_bucket(index, per_bucket=per_bucket, seed=seed)
     index = index.sort_values(["horizon_bucket", "category", "ticker", "freeze_fraction"]).reset_index(drop=True)
-    index["prompt"] = index.apply(_build_prompt, axis=1)
+    index["history_mode"] = history_mode
+    index["prompt"] = index.apply(lambda row: _build_prompt(row, history_mode=history_mode), axis=1)
 
     path = out_dir / "time_eval_index.parquet"
     index.to_parquet(path, index=False)
+    audit_df = (
+        index.groupby("category")["title"]
+        .apply(lambda s: s.head(10).tolist())
+        .reset_index(name="sample_titles")
+    )
+    audit_df["sample_titles"] = audit_df["sample_titles"].apply(json.dumps)
+    audit_path = out_dir / "category_audit.csv"
+    audit_df.to_csv(audit_path, index=False)
     print(
         f"build_time_eval_index: {len(spans):,} eligible markets, "
         f"{len(items):,} freeze items, {len(index):,} sampled tasks -> {path}"
@@ -430,7 +457,7 @@ def build_time_eval_index(
     print(index.groupby(["horizon_bucket", "category"]).size().to_string())
     print("\nBaseline source distribution:")
     print(index["baseline_source"].value_counts(normalize=True).rename("share").to_string())
-    print("\nCategory title audit:")
+    print(f"\nCategory title audit -> {audit_path}")
     print(index.groupby("category")["title"].apply(lambda s: s.head(5).tolist()).to_string())
     return index
 
@@ -448,6 +475,7 @@ def main() -> None:
         recent_trades=int(os.environ.get("TIME_EVAL_RECENT_TRADES", "0")),
         baseline_hours=int(os.environ.get("TIME_EVAL_BASELINE_HOURS", "24")),
         min_recent_baseline_trades=int(os.environ.get("TIME_EVAL_MIN_RECENT_BASELINE_TRADES", "3")),
+        history_mode=os.environ.get("TIME_EVAL_HISTORY_MODE", "full"),
     )
 
 
