@@ -192,7 +192,7 @@ def _format_recent_trades(trades: list[dict]) -> str:
     return "\n".join(lines)
 
 
-HISTORY_MODES = ("full", "baseline_only", "none")
+HISTORY_MODES = ("full", "baseline_only", "history_only", "none")
 
 
 def _build_prompt(row: pd.Series, history_mode: str = "full") -> str:
@@ -239,7 +239,7 @@ Taker NO trades: {int(row['taker_no_trades'])}"""
     ]
     if history_mode in {"baseline_only", "full"}:
         blocks.append(baseline_section)
-    if history_mode == "full":
+    if history_mode in {"history_only", "full"}:
         blocks.append(history_summary_section)
         blocks.append(history_full_section)
     blocks.append("Return exactly one line now: P(YES)=<number between 0 and 1>")

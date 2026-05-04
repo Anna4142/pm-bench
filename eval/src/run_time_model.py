@@ -150,6 +150,7 @@ async def _run_one(
     row: pd.Series,
     max_tokens: int,
     temperature: float,
+    reasoning: bool,
 ) -> dict[str, Any]:
     try:
         response = await client.chat.completions.create(
@@ -157,18 +158,24 @@ async def _run_one(
             messages=_messages(row),
             max_tokens=max_tokens,
             temperature=temperature,
-            extra_body={"reasoning": {"enabled": False}},
+            extra_body={"reasoning": {"enabled": bool(reasoning)}},
         )
         output = response.choices[0].message.content or ""
         usage = response.usage
+        reasoning_tokens = 0
+        if usage is not None:
+            details = getattr(usage, "completion_tokens_details", None)
+            if details is not None:
+                reasoning_tokens = int(getattr(details, "reasoning_tokens", 0) or 0)
         token_usage = {
             "input_tokens": float(getattr(usage, "prompt_tokens", 0) or 0),
             "output_tokens": float(getattr(usage, "completion_tokens", 0) or 0),
+            "reasoning_tokens": float(reasoning_tokens),
         }
         error = None
     except Exception as exc:
         output = ""
-        token_usage = {"input_tokens": 0.0, "output_tokens": 0.0}
+        token_usage = {"input_tokens": 0.0, "output_tokens": 0.0, "reasoning_tokens": 0.0}
         error = repr(exc)
 
     return {
@@ -213,6 +220,7 @@ async def run_time_eval(
     run_id: str | None,
     model_cutoff: str | None,
     history_mode: str,
+    reasoning: bool,
     markets_dir: Path,
     trades_dir: Path,
     out_dir: Path,
@@ -224,7 +232,8 @@ async def run_time_eval(
 
     out_dir.mkdir(parents=True, exist_ok=True)
     started_at = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    run_id = _safe_name(run_id or f"{started_at}__hist-{history_mode}")
+    reasoning_tag = "reasonON" if reasoning else "reasonOFF"
+    run_id = _safe_name(run_id or f"{started_at}__hist-{history_mode}__{reasoning_tag}")
     index = _load_or_build_index(
         out_dir, markets_dir, trades_dir, per_bucket, seed, rebuild_index, history_mode
     )
@@ -236,6 +245,8 @@ async def run_time_eval(
     print("\nTime-eval token/cost estimate:")
     print(f"  Tasks:                  {len(tasks)}")
     print(f"  Run ID:                 {run_id}")
+    print(f"  History mode:           {history_mode}")
+    print(f"  Reasoning enabled:      {reasoning}")
     print(f"  Temperature:            {temperature}")
     print(f"  Estimated input tokens: {estimate['estimated_input_tokens']:.0f}")
     print(f"  Max output tokens:      {estimate['max_output_tokens']:.0f}")
@@ -257,7 +268,9 @@ async def run_time_eval(
 
     async def guarded(row: pd.Series) -> dict[str, Any]:
         async with semaphore:
-            return await _run_one(client, model, row, max_tokens=max_tokens, temperature=temperature)
+            return await _run_one(
+                client, model, row, max_tokens=max_tokens, temperature=temperature, reasoning=reasoning
+            )
 
     outputs = await asyncio.gather(*(guarded(row) for _, row in tasks.iterrows()))
     detailed, summary = score_outputs(outputs, model_name=model, model_cutoff=model_cutoff)
@@ -270,6 +283,7 @@ async def run_time_eval(
     pricing = fetch_openrouter_pricing(model, api_key=api_key)
     actual_input = sum(o["token_usage"]["input_tokens"] for o in outputs)
     actual_output = sum(o["token_usage"]["output_tokens"] for o in outputs)
+    actual_reasoning = sum(o["token_usage"].get("reasoning_tokens", 0) for o in outputs)
     actual_cost = cost_for_usage(actual_input, actual_output, pricing)
 
     safe_model = model.replace("/", "__")
@@ -333,12 +347,14 @@ async def run_time_eval(
         "seed": seed,
         "model_cutoff": model_cutoff,
         "history_mode": history_mode,
+        "reasoning": reasoning,
         "n_requested": len(outputs),
         "n_eligible": len(detailed),
         "estimate": estimate,
         "actual_usage": {
             "actual_input_tokens": actual_input,
             "actual_output_tokens": actual_output,
+            "actual_reasoning_tokens": actual_reasoning,
             "actual_total_tokens": actual_input + actual_output,
             "actual_cost_usd": actual_cost,
         },
@@ -359,7 +375,10 @@ async def run_time_eval(
 
     print("\nTime-eval summary:")
     print(summary.to_string(index=False))
-    print(f"\nActual token usage: {actual_input:.0f} input, {actual_output:.0f} output, {money(actual_cost)}")
+    print(
+        f"\nActual token usage: {actual_input:.0f} input, {actual_output:.0f} output, "
+        f"{actual_reasoning:.0f} reasoning, {money(actual_cost)}"
+    )
     print(f"Raw outputs: {results_path}")
     print(f"Scored rows: {detailed_path}")
     print(f"Run task log: {run_task_log_path}")
@@ -385,7 +404,12 @@ def main() -> None:
         "--history-mode",
         choices=HISTORY_MODES,
         default=os.environ.get("TIME_EVAL_HISTORY_MODE", "full"),
-        help="Trajectory ablation: 'full' shows price history, 'baseline_only' shows just market price, 'none' is metadata only.",
+        help="Trajectory ablation: 'full' = metadata + baseline + price history, 'baseline_only' = metadata + market price, 'history_only' = metadata + price history (no anchor), 'none' = metadata only.",
+    )
+    parser.add_argument(
+        "--reasoning",
+        action="store_true",
+        help="Enable OpenRouter reasoning tokens for the model. Defaults to False (parity with paper main run).",
     )
     parser.add_argument("--per-bucket", type=int, default=int(os.environ.get("TIME_EVAL_PER_BUCKET", "20")))
     parser.add_argument("--seed", type=int, default=int(os.environ.get("EVAL_SEED", "7")))
@@ -410,6 +434,7 @@ def main() -> None:
             run_id=args.run_id,
             model_cutoff=args.model_cutoff,
             history_mode=args.history_mode,
+            reasoning=args.reasoning,
             markets_dir=args.markets_dir,
             trades_dir=args.trades_dir,
             out_dir=args.out_dir,
