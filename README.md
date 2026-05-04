@@ -79,8 +79,9 @@ Freeze-time sampling:
 - Skip freeze times within 24 hours of resolution.
 - Bucket items into `short`, `mid`, and `long` by `horizon_days` terciles.
 - Stratify sampling by horizon bucket and category.
-- Use a recent pre-freeze VWAP as the market-price baseline and keep only
-  non-trivial freeze points with baseline `P(YES)` in `[0.15, 0.85]`.
+- Use a recent pre-freeze VWAP as the market-price baseline when there are at
+  least 3 trades in the recent window; otherwise fall back to all-visible VWAP.
+- Keep only non-trivial freeze points with baseline `P(YES)` in `[0.15, 0.85]`.
 - Include every pre-freeze trade row by default; set
   `TIME_EVAL_RECENT_TRADES` to a positive number to cap the table.
 
@@ -119,6 +120,7 @@ Override defaults via env vars:
 - `EVAL_SEED`        (default: `7`)
 - `TIME_EVAL_RECENT_TRADES` (default: `0`) — include all pre-freeze trades; positive values cap the table
 - `TIME_EVAL_BASELINE_HOURS` (default: `24`) — recent VWAP window for the market-price baseline
+- `TIME_EVAL_MIN_RECENT_BASELINE_TRADES` (default: `3`) — minimum trades required to use the recent VWAP baseline
 
 ## Outputs
 

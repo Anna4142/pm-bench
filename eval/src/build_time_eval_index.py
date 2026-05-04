@@ -33,6 +33,7 @@ MIN_LIFETIME_DAYS = 7.0
 MIN_HORIZON_HOURS = 24.0
 MARKET_PRICE_MIN = 0.15
 MARKET_PRICE_MAX = 0.85
+MIN_RECENT_BASELINE_TRADES = 3
 
 
 def _default_root() -> Path:
@@ -121,6 +122,7 @@ Market price baseline at t0:
 YES price: {row['market_price_at_t0']:.2f}
 NO price: {1.0 - row['market_price_at_t0']:.2f}
 Recent baseline window trades: {int(row['recent_baseline_trades'])}
+Baseline source: {row['baseline_source']}
 
 Pre-freeze price history summary:
 Number of pre-freeze trades: {int(row['context_trades'])}
@@ -335,6 +337,7 @@ def build_time_eval_index(
     min_context_trades: int = 10,
     recent_trades: int = 0,
     baseline_hours: int = 24,
+    min_recent_baseline_trades: int = MIN_RECENT_BASELINE_TRADES,
 ) -> pd.DataFrame:
     out_dir.mkdir(parents=True, exist_ok=True)
     con = duckdb.connect()
@@ -401,9 +404,14 @@ def build_time_eval_index(
     index["market_id"] = index["ticker"]
     index["question_text"] = index["title"]
     index["resolution"] = (index["result"] == "yes").astype(int)
-    index["recent_vwap_yes_price"] = index["recent_vwap_yes_price"].fillna(index["vwap_yes_price"])
     index["recent_baseline_trades"] = index["recent_baseline_trades"].fillna(0)
-    index["market_price_at_t0"] = index["recent_vwap_yes_price"] / 100.0
+    use_recent_baseline = index["recent_vwap_yes_price"].notna() & (
+        index["recent_baseline_trades"] >= min_recent_baseline_trades
+    )
+    index["baseline_source"] = "all_visible_vwap"
+    index.loc[use_recent_baseline, "baseline_source"] = f"recent_vwap_{baseline_hours}h"
+    index["market_price_at_t0"] = index["vwap_yes_price"] / 100.0
+    index.loc[use_recent_baseline, "market_price_at_t0"] = index.loc[use_recent_baseline, "recent_vwap_yes_price"] / 100.0
     index["baseline_prob_yes"] = index["market_price_at_t0"]
     index["yes_price_change"] = index["last_yes_price"] - index["first_yes_price"]
     index = index[index["market_price_at_t0"].between(MARKET_PRICE_MIN, MARKET_PRICE_MAX)].copy()
@@ -420,6 +428,10 @@ def build_time_eval_index(
         f"{len(items):,} freeze items, {len(index):,} sampled tasks -> {path}"
     )
     print(index.groupby(["horizon_bucket", "category"]).size().to_string())
+    print("\nBaseline source distribution:")
+    print(index["baseline_source"].value_counts(normalize=True).rename("share").to_string())
+    print("\nCategory title audit:")
+    print(index.groupby("category")["title"].apply(lambda s: s.head(5).tolist()).to_string())
     return index
 
 
@@ -435,6 +447,7 @@ def main() -> None:
         min_context_trades=int(os.environ.get("TIME_EVAL_MIN_CONTEXT_TRADES", "10")),
         recent_trades=int(os.environ.get("TIME_EVAL_RECENT_TRADES", "0")),
         baseline_hours=int(os.environ.get("TIME_EVAL_BASELINE_HOURS", "24")),
+        min_recent_baseline_trades=int(os.environ.get("TIME_EVAL_MIN_RECENT_BASELINE_TRADES", "3")),
     )
 
 

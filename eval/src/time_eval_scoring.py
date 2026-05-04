@@ -12,7 +12,11 @@ import pandas as pd
 INITIAL_CASH = 10_000.0
 MAX_CONTRACTS = 100.0
 DERIVED_TRADE_EDGE_THRESHOLD = 0.02
-MODEL_CUTOFFS: dict[str, pd.Timestamp] = {}
+MODEL_CUTOFFS: dict[str, pd.Timestamp] = {
+    # Verified from public model pages/search snippets on 2026-05-04.
+    "openai/gpt-5.5": pd.Timestamp("2025-12-01", tz="UTC"),
+    "deepseek/deepseek-v3.2": pd.Timestamp("2025-06-04", tz="UTC"),
+}
 
 
 def parse_probability(text: str) -> float | None:
@@ -35,40 +39,6 @@ def parse_probability(text: str) -> float | None:
             return None
         return value
     return None
-
-
-def parse_action(text: str, ticker: str) -> dict[str, Any]:
-    candidates: list[dict[str, Any]] = []
-    ticker_upper = ticker.upper()
-    for raw_line in text.splitlines():
-        line = raw_line.strip().strip("`*_ ")
-        line = re.sub(r"^[\s>*#\-\d\.\)]+", "", line).strip()
-        line = re.sub(
-            r"^(?:(?:FINAL|TRADE)\s+)?(?:DECISION|ACTION|TRADE)\s*:\s*",
-            "",
-            line,
-            flags=re.IGNORECASE,
-        )
-        upper = line.upper()
-        if re.match(r"^(?:MY\s+DECISION\s+IS\s+)?HOLD\b", upper):
-            candidates.append({"cmd": "HOLD", "side": None, "amount": 0.0})
-            continue
-
-        match = re.match(
-            r"^(?:MY\s+DECISION\s+IS\s+)?(BUY|SELL)\s+(YES|NO)\b(?:\s+([A-Z0-9._:-]+))?(?:\s+([\d,]+(?:\.\d+)?))?",
-            upper,
-        )
-        if not match:
-            continue
-        cmd, side, parsed_ticker, amount_text = match.groups()
-        if parsed_ticker and parsed_ticker not in {ticker_upper, "TICKER", "MARKET", "MARKET_ID"}:
-            continue
-        amount = float(amount_text.replace(",", "")) if amount_text and amount_text != "CONTRACTS" else MAX_CONTRACTS
-        candidates.append({"cmd": cmd, "side": side, "amount": min(MAX_CONTRACTS, max(0.0, amount))})
-
-    if candidates:
-        return candidates[-1]
-    return {"cmd": "INVALID", "side": None, "amount": 0.0}
 
 
 def derive_trade(prob_yes: float | None, market_price_yes: float) -> dict[str, Any]:
