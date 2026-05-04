@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
 import duckdb
@@ -70,22 +71,112 @@ def _sample_by_bucket(df: pd.DataFrame, per_bucket: int, seed: int) -> pd.DataFr
     return pd.concat(chunks, ignore_index=True).sort_values(["horizon_bucket", "category", "ticker", "freeze_fraction"])
 
 
+_CATEGORY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "politics",
+        re.compile(
+            r"\b("
+            r"president|presidential|senate|senator|house of representatives|congress|"
+            r"election|electoral|primary|caucus|incumbent|cabinet|nominee|"
+            r"trump|biden|kamala|harris|obama|clinton|"
+            r"governor|gubernatorial|mayor|attorney general|"
+            r"supreme court|scotus|ussc|popular vote|"
+            r"chancellor|chancellorship|prime minister|parliament|parliamentary|taoiseach|"
+            r"house minority|house majority|minority leader|majority leader|"
+            r"tariff|tariffs|impeach"
+            r")\b"
+        ),
+    ),
+    (
+        "econ",
+        re.compile(
+            r"\b("
+            r"fed|federal funds|federal reserve|cpi|core cpi|gdp|"
+            r"unemployment|jobs report|payrolls|nonfarm|"
+            r"inflation|disinflation|recession|"
+            r"trade deficit|interest rate|interest rates|"
+            r"powell|fomc|rate cut|rate hike|hike rates|cut rates|basis points"
+            r")\b"
+        ),
+    ),
+    (
+        "finance",
+        re.compile(
+            r"\b("
+            r"bitcoin|btc|ethereum|eth|crypto|cryptocurrency|"
+            r"stock|stocks|s&p|sp500|s&p 500|nasdaq|dow jones|dow|"
+            r"eur/usd|exchange rate|"
+            r"earnings|earnings call|"
+            r"gas price|gasoline|"
+            r"coinbase|robinhood|brokerage|membership|membership price"
+            r")\b"
+        ),
+    ),
+    (
+        "culture",
+        re.compile(
+            r"\b("
+            r"movie|film|box office|"
+            r"album|song|charts|hot 100|billboard|"
+            r"rotten tomatoes|"
+            r"grammy|grammys|oscar|oscars|emmy|emmys|tony|tonys|"
+            r"golden globe|golden globes|critics choice|sag awards|"
+            r"best actor|best actress|best director|best new artist|"
+            r"best picture|best supporting|"
+            r"netflix|streaming|tv show|tv series|"
+            r"video game|game of the year"
+            r")\b"
+        ),
+    ),
+    (
+        "sports",
+        re.compile(
+            r"\b("
+            r"nba|nfl|nhl|mlb|epl|premier league|la liga|ucl|champions league|"
+            r"f1 race|formula 1|moto gp|"
+            r"super bowl|world series|world cup|stanley cup|nba finals|"
+            r"playoff|playoffs|tournament|"
+            r"ncaa|college football|college basketball|"
+            r"pro baseball|pro football|pro basketball|pro hockey|"
+            r"head coach|french open|us open|wimbledon|australian open|masters tournament|"
+            r"division winner|series winner|championship|"
+            r"vs\s+\w+\s+winner|at\s+\w+\s+winner"
+            r")\b"
+        ),
+    ),
+    (
+        "weather",
+        re.compile(
+            r"\b("
+            r"temperature|temperatures|weather|"
+            r"rain|rainfall|snow|snowfall|"
+            r"hurricane|hurricanes|tornado|"
+            r"hottest|coldest|warmest|"
+            r"arctic sea ice|sea ice|"
+            r"degrees|fahrenheit|celsius"
+            r")\b"
+        ),
+    ),
+    (
+        "health",
+        re.compile(
+            r"\b("
+            r"covid|covid-19|coronavirus|"
+            r"vaccine|vaccination|vaxx|"
+            r"flu|influenza|outbreak|pandemic|"
+            r"measles|smallpox|polio|disease|"
+            r"cdc|fda"
+            r")\b"
+        ),
+    ),
+)
+
+
 def _classify_category(title: str, event_ticker: str, market_type: str) -> str:
     text = f"{title} {event_ticker} {market_type}".lower()
-    if any(x in text for x in ("pres", "senate", "house", "election", "trump", "biden", "kamala", "mayor")):
-        return "politics"
-    if any(x in text for x in ("fed", "cpi", "gdp", "unemployment", "inflation", "trade deficit", "interest rate")):
-        return "econ"
-    if any(x in text for x in ("nba", "nfl", "nhl", "mlb", "game", "series winner", "championship", "win the")):
-        return "sports"
-    if any(x in text for x in ("temp", "temperature", "weather", "rain", "snow", "hurricane")):
-        return "weather"
-    if any(x in text for x in ("bitcoin", "ethereum", "crypto", "stock", "s&p", "nasdaq", "price")):
-        return "finance"
-    if any(x in text for x in ("movie", "album", "rotten tomatoes", "grammy", "oscar", "box office")):
-        return "culture"
-    if any(x in text for x in ("covid", "vaxx", "vaccine", "cases")):
-        return "health"
+    for category, pattern in _CATEGORY_PATTERNS:
+        if pattern.search(text):
+            return category
     return "other"
 
 
