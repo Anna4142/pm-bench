@@ -237,6 +237,25 @@ async def run_time_eval(
     index = _load_or_build_index(
         out_dir, markets_dir, trades_dir, per_bucket, seed, rebuild_index, history_mode
     )
+    n_index_total = len(index)
+    if model_cutoff is not None:
+        cutoff_ts = pd.to_datetime(model_cutoff, utc=True)
+        if cutoff_ts.tzinfo is None:
+            cutoff_ts = cutoff_ts.tz_localize("UTC")
+        resolution_ts = pd.to_datetime(index["resolution_date"], utc=True, errors="coerce")
+        eligible_mask = resolution_ts >= cutoff_ts
+        n_dropped = int((~eligible_mask).sum())
+        index = index[eligible_mask].copy().reset_index(drop=True)
+        print(
+            f"\nCutoff filter at sample time: dropped {n_dropped} of {n_index_total} indexed tasks "
+            f"(resolution_date < {cutoff_ts.date()}); {len(index)} remain."
+        )
+        if index.empty:
+            raise SystemExit(
+                f"No tasks remain after cutoff filter ({model_cutoff}). "
+                f"Latest resolution_date in index is "
+                f"{pd.to_datetime(pd.read_parquet(out_dir / 'time_eval_index.parquet')['resolution_date'], utc=True).max()}"
+            )
     tasks = _sample_tasks(index, num_examples, seed, domains=domains)
     estimate = _estimate_cost(tasks, model=model, max_tokens=max_tokens, api_key=api_key)
     estimate_path = out_dir / f"time_token_estimate__{model.replace('/', '__')}.json"
