@@ -203,6 +203,7 @@ async def run_time_eval(
     seed: int,
     domains: list[str] | None,
     run_id: str | None,
+    model_cutoff: str | None,
     markets_dir: Path,
     trades_dir: Path,
     out_dir: Path,
@@ -246,7 +247,9 @@ async def run_time_eval(
             return await _run_one(client, model, row, max_tokens=max_tokens, temperature=temperature)
 
     outputs = await asyncio.gather(*(guarded(row) for _, row in tasks.iterrows()))
-    detailed, summary = score_outputs(outputs)
+    detailed, summary = score_outputs(outputs, model_name=model, model_cutoff=model_cutoff)
+    if detailed.empty:
+        raise SystemExit("No eligible scored rows remain after model cutoff filtering.")
     detailed.insert(0, "run_id", run_id)
     detailed.insert(1, "model", model)
     detailed.insert(2, "temperature", temperature)
@@ -315,6 +318,9 @@ async def run_time_eval(
         "started_at": started_at,
         "domains": domains,
         "seed": seed,
+        "model_cutoff": model_cutoff,
+        "n_requested": len(outputs),
+        "n_eligible": len(detailed),
         "estimate": estimate,
         "actual_usage": {
             "actual_input_tokens": actual_input,
@@ -360,6 +366,7 @@ def main() -> None:
     parser.add_argument("--rebuild-index", action="store_true")
     parser.add_argument("--domains", nargs="*", default=None, help="Optional categories to cross with long/mid/short.")
     parser.add_argument("--run-id", default=None, help="Optional ID for non-overwritten run artifacts.")
+    parser.add_argument("--model-cutoff", default=None, help="Exclude tasks with resolution_date before this date.")
     parser.add_argument("--per-bucket", type=int, default=int(os.environ.get("TIME_EVAL_PER_BUCKET", "20")))
     parser.add_argument("--seed", type=int, default=int(os.environ.get("EVAL_SEED", "7")))
     parser.add_argument("--markets-dir", type=Path, default=ROOT / "data" / "kalshi" / "markets")
@@ -381,6 +388,7 @@ def main() -> None:
             seed=args.seed,
             domains=args.domains,
             run_id=args.run_id,
+            model_cutoff=args.model_cutoff,
             markets_dir=args.markets_dir,
             trades_dir=args.trades_dir,
             out_dir=args.out_dir,

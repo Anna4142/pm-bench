@@ -6,11 +6,13 @@ import math
 import re
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 INITIAL_CASH = 10_000.0
 MAX_CONTRACTS = 100.0
 DERIVED_TRADE_EDGE_THRESHOLD = 0.02
+MODEL_CUTOFFS: dict[str, pd.Timestamp] = {}
 
 
 def parse_probability(text: str) -> float | None:
@@ -125,7 +127,39 @@ def score_trade(action: dict[str, Any], result: str, yes_price: float, no_price:
     }
 
 
-def score_outputs(rows: list[dict[str, Any]]) -> tuple[pd.DataFrame, pd.DataFrame]:
+def _filter_by_model_cutoff(
+    rows: list[dict[str, Any]],
+    model_name: str | None,
+    model_cutoff: pd.Timestamp | str | None,
+) -> list[dict[str, Any]]:
+    cutoff = pd.Timestamp(model_cutoff) if model_cutoff is not None else None
+    if cutoff is None and model_name is not None:
+        cutoff = MODEL_CUTOFFS.get(model_name)
+    if cutoff is None:
+        return rows
+    if cutoff.tzinfo is None:
+        cutoff = cutoff.tz_localize("UTC")
+    else:
+        cutoff = cutoff.tz_convert("UTC")
+
+    eligible = []
+    for row in rows:
+        resolution_date = pd.Timestamp(row["resolution_date"])
+        if resolution_date.tzinfo is None:
+            resolution_date = resolution_date.tz_localize("UTC")
+        else:
+            resolution_date = resolution_date.tz_convert("UTC")
+        if resolution_date >= cutoff:
+            eligible.append(row)
+    return eligible
+
+
+def score_outputs(
+    rows: list[dict[str, Any]],
+    model_name: str | None = None,
+    model_cutoff: pd.Timestamp | str | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    rows = _filter_by_model_cutoff(rows, model_name=model_name, model_cutoff=model_cutoff)
     scored_rows: list[dict[str, Any]] = []
     for row in rows:
         output_text = str(row.get("output", ""))
@@ -165,6 +199,38 @@ def score_outputs(rows: list[dict[str, Any]]) -> tuple[pd.DataFrame, pd.DataFram
     return detailed, summary
 
 
+def cluster_bootstrap_ci(
+    detailed: pd.DataFrame,
+    metric_col: str,
+    cluster_col: str = "ticker",
+    n_boot: int = 1000,
+    seed: int = 7,
+    agg: str = "mean",
+) -> tuple[float, float]:
+    if detailed.empty or metric_col not in detailed or cluster_col not in detailed:
+        return (float("nan"), float("nan"))
+    cluster_values = []
+    for _, group in detailed.groupby(cluster_col):
+        values = group[metric_col].dropna()
+        if values.empty:
+            continue
+        if agg == "sum":
+            cluster_values.append(float(values.sum()))
+        else:
+            cluster_values.append(float(values.mean()))
+    if not cluster_values:
+        return (float("nan"), float("nan"))
+
+    rng = np.random.default_rng(seed)
+    estimates = []
+    cluster_values_array = np.asarray(cluster_values, dtype=float)
+    for _ in range(n_boot):
+        sampled = rng.choice(cluster_values_array, size=len(cluster_values_array), replace=True)
+        estimates.append(float(np.sum(sampled) if agg == "sum" else np.mean(sampled)))
+    low, high = np.percentile(estimates, [2.5, 97.5])
+    return (float(low), float(high))
+
+
 def summarize_scores(detailed: pd.DataFrame) -> pd.DataFrame:
     if detailed.empty:
         return pd.DataFrame()
@@ -178,6 +244,9 @@ def summarize_scores(detailed: pd.DataFrame) -> pd.DataFrame:
     )
     groupings.extend(("liquidity_tier", str(name), group) for name, group in detailed.groupby("liquidity_tier"))
     for group_by, group_name, group in groupings:
+        brier_ci_low, brier_ci_high = cluster_bootstrap_ci(group, "brier")
+        brier_delta_ci_low, brier_delta_ci_high = cluster_bootstrap_ci(group, "brier_delta_vs_baseline")
+        total_pnl_ci_low, total_pnl_ci_high = cluster_bootstrap_ci(group, "trade_pnl", agg="sum")
         rows.append(
             {
                 "group_by": group_by,
@@ -185,12 +254,18 @@ def summarize_scores(detailed: pd.DataFrame) -> pd.DataFrame:
                 "n": len(group),
                 "forecast_coverage": group["prob_yes"].notna().mean(),
                 "mean_brier": group["brier"].mean(),
+                "mean_brier_ci_low": brier_ci_low,
+                "mean_brier_ci_high": brier_ci_high,
                 "baseline_brier": group["baseline_brier"].mean(),
                 "brier_delta_vs_baseline": group["brier_delta_vs_baseline"].mean(),
+                "brier_delta_ci_low": brier_delta_ci_low,
+                "brier_delta_ci_high": brier_delta_ci_high,
                 "mean_log_loss": group["log_loss"].mean(),
                 "baseline_log_loss": group["baseline_log_loss"].mean(),
                 "log_loss_delta_vs_baseline": group["log_loss_delta_vs_baseline"].mean(),
                 "total_pnl": group["trade_pnl"].sum(),
+                "total_pnl_ci_low": total_pnl_ci_low,
+                "total_pnl_ci_high": total_pnl_ci_high,
                 "mean_pnl": group["trade_pnl"].mean(),
                 "mean_reward": group["trade_reward"].mean(),
                 "trade_rate": group["parsed_action"].isin(["BUY YES", "BUY NO"]).mean(),

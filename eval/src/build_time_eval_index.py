@@ -31,6 +31,8 @@ Do not output a trade. The evaluator will deterministically derive any simulated
 FREEZE_FRACTIONS: tuple[float, ...] = (0.10, 0.25, 0.50, 0.75, 0.90)
 MIN_LIFETIME_DAYS = 7.0
 MIN_HORIZON_HOURS = 24.0
+MARKET_PRICE_MIN = 0.15
+MARKET_PRICE_MAX = 0.85
 
 
 def _default_root() -> Path:
@@ -107,21 +109,18 @@ Market ID: {row['market_id']}
 Title: {row['title']}
 Resolution criteria: {row['resolution_criteria']}
 Ticker: {row['ticker']}
-Category: {row['category']}
-Liquidity tier: {row['liquidity_tier']}
 Market created: {row['market_created_time']}
 Resolution date: {row['resolution_date']}
 
 Timeline:
 First trade: {row['first_trade']}
 Freeze time t0: {row['t0']}
-Freeze fraction of market lifetime: {row['freeze_fraction']:.2f}
 Horizon to resolution: {row['horizon_days']:.2f} days
-Horizon bucket: {row['horizon_bucket']}
 
 Market price baseline at t0:
 YES price: {row['market_price_at_t0']:.2f}
 NO price: {1.0 - row['market_price_at_t0']:.2f}
+Recent baseline window trades: {int(row['recent_baseline_trades'])}
 
 Pre-freeze price history summary:
 Number of pre-freeze trades: {int(row['context_trades'])}
@@ -213,6 +212,7 @@ def _load_context_for_sample(
     sample: pd.DataFrame,
     min_context_trades: int,
     recent_trades: int,
+    baseline_hours: int,
 ) -> pd.DataFrame:
     trades_glob = str(trades_dir / "*.parquet")
     sample_for_duck = sample[["example_id", "ticker", "t0"]].copy()
@@ -222,6 +222,7 @@ def _load_context_for_sample(
         WITH visible AS (
             SELECT
                 s.example_id,
+                s.t0,
                 t.ticker,
                 t.created_time,
                 t.yes_price,
@@ -244,6 +245,29 @@ def _load_context_for_sample(
             arg_max(yes_price, created_time) AS last_yes_price,
             arg_max(no_price, created_time) AS last_no_price,
             sum(yes_price * count) / nullif(sum(count), 0) AS vwap_yes_price,
+            sum(
+                CASE
+                    WHEN created_time >= t0 - INTERVAL '{baseline_hours} hours'
+                    THEN yes_price * count
+                    ELSE 0
+                END
+            ) / nullif(
+                sum(
+                    CASE
+                        WHEN created_time >= t0 - INTERVAL '{baseline_hours} hours'
+                        THEN count
+                        ELSE 0
+                    END
+                ),
+                0
+            ) AS recent_vwap_yes_price,
+            sum(
+                CASE
+                    WHEN created_time >= t0 - INTERVAL '{baseline_hours} hours'
+                    THEN 1
+                    ELSE 0
+                END
+            ) AS recent_baseline_trades,
             min(created_time) AS first_visible_trade_time,
             max(created_time) AS last_visible_trade_time,
             sum(CASE WHEN taker_side = 'yes' THEN 1 ELSE 0 END) AS taker_yes_trades,
@@ -310,6 +334,7 @@ def build_time_eval_index(
     min_total_trades: int = 20,
     min_context_trades: int = 10,
     recent_trades: int = 0,
+    baseline_hours: int = 24,
 ) -> pd.DataFrame:
     out_dir.mkdir(parents=True, exist_ok=True)
     con = duckdb.connect()
@@ -356,7 +381,9 @@ def build_time_eval_index(
         items["span_bucket"] = items["horizon_bucket"]
         items = items.sort_values(["horizon_bucket", "category", "ticker", "freeze_fraction"]).reset_index(drop=True)
         items.insert(0, "example_id", range(len(items)))
-        sample = _sample_by_bucket(items, per_bucket=per_bucket, seed=seed)
+        # Oversample before context-dependent filters so uncertainty and
+        # min-trade filters do not empty small strata too aggressively.
+        sample = _sample_by_bucket(items, per_bucket=per_bucket * 5, seed=seed)
 
         context = _load_context_for_sample(
             con,
@@ -364,6 +391,7 @@ def build_time_eval_index(
             sample,
             min_context_trades=min_context_trades,
             recent_trades=recent_trades,
+            baseline_hours=baseline_hours,
         )
     finally:
         con.close()
@@ -373,9 +401,15 @@ def build_time_eval_index(
     index["market_id"] = index["ticker"]
     index["question_text"] = index["title"]
     index["resolution"] = (index["result"] == "yes").astype(int)
-    index["market_price_at_t0"] = index["last_yes_price"] / 100.0
+    index["recent_vwap_yes_price"] = index["recent_vwap_yes_price"].fillna(index["vwap_yes_price"])
+    index["recent_baseline_trades"] = index["recent_baseline_trades"].fillna(0)
+    index["market_price_at_t0"] = index["recent_vwap_yes_price"] / 100.0
     index["baseline_prob_yes"] = index["market_price_at_t0"]
     index["yes_price_change"] = index["last_yes_price"] - index["first_yes_price"]
+    index = index[index["market_price_at_t0"].between(MARKET_PRICE_MIN, MARKET_PRICE_MAX)].copy()
+    if index.empty:
+        raise SystemExit("No sampled tasks remain after market-price uncertainty filter.")
+    index = _sample_by_bucket(index, per_bucket=per_bucket, seed=seed)
     index = index.sort_values(["horizon_bucket", "category", "ticker", "freeze_fraction"]).reset_index(drop=True)
     index["prompt"] = index.apply(_build_prompt, axis=1)
 
@@ -400,6 +434,7 @@ def main() -> None:
         min_total_trades=int(os.environ.get("TIME_EVAL_MIN_TOTAL_TRADES", "20")),
         min_context_trades=int(os.environ.get("TIME_EVAL_MIN_CONTEXT_TRADES", "10")),
         recent_trades=int(os.environ.get("TIME_EVAL_RECENT_TRADES", "0")),
+        baseline_hours=int(os.environ.get("TIME_EVAL_BASELINE_HOURS", "24")),
     )
 
 

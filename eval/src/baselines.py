@@ -57,16 +57,7 @@ def policy_always_no(market: pd.Series, _calib: dict[int, float]) -> Action:
 
 
 def policy_price_as_prob(market: pd.Series, _calib: dict[int, float]) -> Action:
-    """Treat yes_ask/100 as P(yes). BUY whichever side is cheaper than its prob.
-
-    Equivalent to: assume the market is calibrated; only bet to break ties
-    when one side is strictly underpriced relative to that assumption.
-    """
-    p = int(market["yes_ask"]) / 100.0
-    if int(market["no_ask"]) / 100.0 < (1 - p):
-        return ("NO", 1.0)
-    if p < p:  # never true -- price-as-prob => zero edge
-        return ("YES", 1.0)
+    """Assume the market price is the true probability, so there is no edge."""
     return None
 
 
