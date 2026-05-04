@@ -1,0 +1,17 @@
+# generated eval artifacts
+eval/output/
+eval/eva_resutks/
+output/
+data/
+*.parquet
+*.jsonl
+*.csv
+*.pdf
+*.png
+
+# local secrets/env
+.env
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
